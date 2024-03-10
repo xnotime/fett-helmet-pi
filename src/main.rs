@@ -115,8 +115,8 @@ impl<T: Copy> Rot90<T> {
     }
 
     fn internal_peek(&self) -> Option<<Self as Iterator>::Item> {
-        let xt = self.h - self.y;
-        let yt = self.x;
+        let xt = self.y;
+        let yt = self.w - self.x - 1;
         self.at_pre(xt, yt)
     }
 }
