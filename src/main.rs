@@ -1,4 +1,11 @@
-use std::{borrow::Cow, fs::File, io::Write, ops::DerefMut};
+use std::{
+    borrow::Cow,
+    convert::AsRef,
+    fs::File,
+    io::Write,
+    ops::DerefMut,
+    path::Path,
+};
 
 use anyhow::Result;
 
@@ -10,21 +17,16 @@ const MCU_SERIAL_PORT: &'static str = "/dev/ttyUSB0";
 
 fn main() -> Result<()> {
     let filename = "tallintest.png";
-    println!("Opening png {}...", filename);
-    let file = File::open(filename)?;
-    println!("Reading png data...");
-    let data = read_png(file)?;
     println!("Establishing connection with {}...", MCU_SERIAL_PORT);
     let mut mcu = HelmetMcu::new(MCU_SERIAL_PORT)?;
-    println!("Constructing rotater...");
-    let rot90 = Rot90::new(data, (64, 64));
-    println!("Sending {} pixels...", 64 * 64);
-    mcu.send(rot90)?;
+    println!("Sending image...");
+    mcu.send_png(filename)?;
     Ok(())
 }
 
 struct HelmetMcu<S: DerefMut<Target = T>, T: Write + ?Sized> {
     serial: S,
+    dims: (usize, usize),
 }
 
 const RESET_SEQ: [u8; 11] = [b'#'; 11];
@@ -36,13 +38,25 @@ impl HelmetMcu<Box<dyn SerialPort>, dyn SerialPort> {
                 serial: serialport::new(
                     serial_port_path, 115200,
                 ).open()?,
+                dims: (64, 64),
             }
         )
     }
 }
 
 impl<S: DerefMut<Target = T>, T: Write + ?Sized> HelmetMcu<S, T> {
-    fn send(
+    fn send_png(&mut self, filename: impl AsRef<Path>) -> Result<()> {
+        let file = File::open(filename)?;
+        let data = read_png(file)?;
+        self.send_rotated(data)?;
+        Ok(())
+    }
+
+    fn send_rotated(&mut self, data: Vec<u8>) -> Result<()> {
+        self.send_raw(Rot90::new(data, self.dims))
+    }
+
+    fn send_raw(
         &mut self,
         data: impl Iterator<Item = u8>,
     ) -> Result<()> {

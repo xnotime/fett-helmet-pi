@@ -7,5 +7,7 @@ edition = "2021"
 
 [dependencies]
 anyhow = "1.0.80"
+async-std = "1.12.0"
 png = "0.17.13"
 serialport = "4.3.0"
+tide = "0.16.0"
