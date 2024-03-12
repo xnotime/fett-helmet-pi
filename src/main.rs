@@ -8,19 +8,19 @@ use std::{
 };
 
 use anyhow::Result;
-
+use indicatif::ProgressBar;
 use png;
-
 use serialport::{self, SerialPort};
 
 const MCU_SERIAL_PORT: &'static str = "/dev/ttyUSB0";
 
+const MAP_IMAGE_FILENAME: &'static str = "tallintest.png";
+
 fn main() -> Result<()> {
-    let filename = "tallintest.png";
     println!("Establishing connection with {}...", MCU_SERIAL_PORT);
     let mut mcu = HelmetMcu::new(MCU_SERIAL_PORT)?;
-    println!("Sending image...");
-    mcu.send_png(filename)?;
+    println!("Sending map image...");
+    mcu.send_map()?;
     Ok(())
 }
 
@@ -45,6 +45,10 @@ impl HelmetMcu<Box<dyn SerialPort>, dyn SerialPort> {
 }
 
 impl<S: DerefMut<Target = T>, T: Write + ?Sized> HelmetMcu<S, T> {
+    fn send_map(&mut self) -> Result<()> {
+        self.send_png(MAP_IMAGE_FILENAME)
+    }
+
     fn send_png(&mut self, filename: impl AsRef<Path>) -> Result<()> {
         let file = File::open(filename)?;
         let data = read_png(file)?;
@@ -60,11 +64,14 @@ impl<S: DerefMut<Target = T>, T: Write + ?Sized> HelmetMcu<S, T> {
         &mut self,
         data: impl Iterator<Item = u8>,
     ) -> Result<()> {
+        println!("[send_raw] Sending reset sequence...");
         self.serial.write_all(&RESET_SEQ)?;
         self.serial.flush()?;
         let mut index_within_row = -1;
         let mut byte = 0x0_u8;
         let mut index_within_byte = 0;
+        println!("[send_raw] Sending pixel data...");
+        let prog = ProgressBar::new(64 * 9);
         for i in data {
             if i > (u8::MAX / 2) {
                 byte |= 1 << index_within_byte;
@@ -73,6 +80,7 @@ impl<S: DerefMut<Target = T>, T: Write + ?Sized> HelmetMcu<S, T> {
             if index_within_byte >= 8 {
                 index_within_byte = 0;
                 self.serial.write_all(&[byte])?;
+                prog.inc(1);
                 byte = 0x0_u8;
                 index_within_row += 1;
                 if index_within_row >= 8 {
@@ -83,11 +91,13 @@ impl<S: DerefMut<Target = T>, T: Write + ?Sized> HelmetMcu<S, T> {
             }
             if index_within_row == -1 {
                 self.serial.write_all(&[0x0])?;
+                prog.inc(1);
                 index_within_row += 1;
                 continue;
             }
         }
         self.serial.flush()?;
+        println!("[send_raw] All data sent and flushed.");
         Ok(())
     }
 }
