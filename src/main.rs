@@ -1,16 +1,20 @@
+#![forbid(unsafe_code)]
+
+#![feature(exit_status_error)]
+
 use std::{
     borrow::Cow,
-    convert::AsRef,
+    ffi::OsStr,
     fs::File,
     io::Write,
     ops::DerefMut,
     path::Path,
+    process::Command,
 };
 
 use anyhow::Result;
 use indicatif::ProgressBar;
-use png;
-use serialport::{self, SerialPort};
+use serialport::SerialPort;
 
 const MCU_SERIAL_PORT: &'static str = "/dev/ttyUSB0";
 
@@ -19,10 +23,21 @@ const MAP_IMAGE_FILENAME: &'static str = "_map.png";
 const INVERT_IMAGE: bool = false;
 
 fn main() -> Result<()> {
-    println!("Establishing connection with {}...", MCU_SERIAL_PORT);
+    println!("[main] Establishing connection with {}...", MCU_SERIAL_PORT);
     let mut mcu = HelmetMcu::new(MCU_SERIAL_PORT)?;
-    println!("Sending map image...");
+    println!("[main] Loading map image...");
+    load_map("59.438484,24.742595")?;
+    println!("[main] Sending map image...");
     mcu.send_map()?;
+    Ok(())
+}
+
+fn load_map(coords: impl AsRef<OsStr>) -> Result<()> {
+    Command::new("./loadmap.sh")
+        .arg(coords)
+        .spawn()?
+        .wait()?
+        .exit_ok()?;
     Ok(())
 }
 
