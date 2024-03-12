@@ -14,7 +14,9 @@ use serialport::{self, SerialPort};
 
 const MCU_SERIAL_PORT: &'static str = "/dev/ttyUSB0";
 
-const MAP_IMAGE_FILENAME: &'static str = "tallintest.png";
+const MAP_IMAGE_FILENAME: &'static str = "_map.png";
+
+const INVERT_IMAGE: bool = false;
 
 fn main() -> Result<()> {
     println!("Establishing connection with {}...", MCU_SERIAL_PORT);
@@ -73,7 +75,7 @@ impl<S: DerefMut<Target = T>, T: Write + ?Sized> HelmetMcu<S, T> {
         println!("[send_raw] Sending pixel data...");
         let prog = ProgressBar::new(64 * 9);
         for i in data {
-            if i > (u8::MAX / 2) {
+            if (i > (u8::MAX / 2)) ^ INVERT_IMAGE {
                 byte |= 1 << index_within_byte;
             }
             index_within_byte += 1;
@@ -97,6 +99,7 @@ impl<S: DerefMut<Target = T>, T: Write + ?Sized> HelmetMcu<S, T> {
             }
         }
         self.serial.flush()?;
+        prog.finish();
         println!("[send_raw] All data sent and flushed.");
         Ok(())
     }
