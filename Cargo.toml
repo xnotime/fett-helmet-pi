@@ -7,8 +7,10 @@ edition = "2021"
 
 [dependencies]
 anyhow = "1.0.80"
-async-std = "1.12.0"
+crossbeam-channel = "0.5.12"
 indicatif = "0.17.8"
+lazy_static = "1.4.0"
 png = "0.17.13"
 serialport = "4.3.0"
-tide = "0.16.0"
+tokio = { version = "1.36.0", features = ["full"] }
+warp = "0.3.6"

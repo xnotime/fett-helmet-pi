@@ -1,0 +1,42 @@
+<!DOCTYPE html>
+<html>
+	<head>
+		<title>Boba Fett Helmet!</title>
+		<meta charset="utf-8">
+		<style>
+		button {
+			font-size: 80pt;
+		}
+		</style>
+	</head>
+	<body>
+		<h1>Helmet Control!</h1>
+		<h3 id="coords_text">loading...</h3>
+		<button id="up">⏫</button>
+		<button id="down">⏬</button>
+		<button id="left">⏪</button>
+		<button id="right">⏩</button>
+		<script type="text/javascript">
+		var lat = 59.438484;
+		var lon = 24.742655;
+		function send_update() {
+			fetch(
+				`http://gtc.local:8080/coords/${lat},${lon}`,
+				{method: "POST"},
+			);
+		}
+		send_update();
+		const scale = 0.0001;
+		function d_update(dlon, dlat) {
+			lat += dlat * scale;
+			lon += dlon * scale;
+			send_update();
+		}
+		up.onclick =    () => d_update( 0, +1);
+		down.onclick =  () => d_update( 0, -1);
+		left.onclick =  () => d_update(-1,  0);
+		right.onclick = () => d_update(+1,  0);
+		</script>
+	</body>
+</html>
+

@@ -4,17 +4,27 @@
 
 use std::{
     borrow::Cow,
+    convert::Infallible,
     ffi::OsStr,
     fs::File,
     io::Write,
+    net::SocketAddr,
     ops::DerefMut,
     path::Path,
     process::Command,
+    thread::{sleep, spawn},
+    time::Instant,
 };
 
 use anyhow::Result;
+use crossbeam_channel::{bounded, Sender, Receiver};
 use indicatif::ProgressBar;
+use lazy_static::lazy_static;
+use png::Decoder as PngDec;
 use serialport::SerialPort;
+use warp::Filter;
+
+const SERVER_ADDR: &'static str = "0.0.0.0:8080";
 
 const MCU_SERIAL_PORT: &'static str = "/dev/ttyUSB0";
 
@@ -22,14 +32,71 @@ const MAP_IMAGE_FILENAME: &'static str = "_map.png";
 
 const INVERT_IMAGE: bool = false;
 
-fn main() -> Result<()> {
-    println!("[main] Establishing connection with {}...", MCU_SERIAL_PORT);
+type UpdateT = String;
+
+#[tokio::main]
+async fn main() -> Result<()> {
+    // normal_mode().await
+    touhou_mode().await
+}
+
+async fn touhou_mode() -> Result<()> {
     let mut mcu = HelmetMcu::new(MCU_SERIAL_PORT)?;
-    println!("[main] Loading map image...");
-    load_map("59.438484,24.742595")?;
-    println!("[main] Sending map image...");
-    mcu.send_map()?;
-    Ok(())
+    let start = Instant::now();
+    let mut last_frame_sent = -1;
+    loop {
+        let time = start.elapsed().as_millis() as i64;
+        let frame = (time / 500) + 1;
+        if frame != last_frame_sent {
+            let filename = format!("BadApple64x64/frame_{frame:03?}.png");
+            println!("{filename:?}");
+            mcu.send_png_g(filename)?;
+            last_frame_sent = frame;
+        }
+    }
+}
+
+async fn normal_mode() -> Result<()> {
+    lazy_static! {
+        static ref UP_CHAN: (Sender<UpdateT>, Receiver<UpdateT>) = bounded(0);
+        static ref UP_TX: &'static Sender<UpdateT> = &UP_CHAN.0;
+        static ref UP_RX: &'static Receiver<UpdateT> = &UP_CHAN.1;
+    }
+    println!("[main] Connecting to microcontroller...");
+    let mut mcu = HelmetMcu::new(MCU_SERIAL_PORT)?;
+    println!("[main] Spawning update handler thread...");
+    spawn(move || {
+        spawn(move || -> Result<Infallible> {
+            println!("[update handler] Listening on rendevous channel...");
+            for coords in *UP_RX {
+                println!("[update handler] Loading map at {coords}...");
+                load_map(coords)?;
+                println!("[update handler] Sending map...");
+                let start = Instant::now();
+                mcu.send_map()?;
+                let elapsed = start.elapsed().as_millis();
+                println!("[update handler] Sent map in {elapsed:.2?}ms.")
+            }
+            unreachable!()
+        }).join().unwrap().unwrap();
+    });
+    println!("[main] Setting up warp...");
+    let html = warp::any().map(move || {
+        println!("[warp filter] [GET] Serving index.html...");
+        warp::reply::html(include_str!("index.html"))
+    });
+    let data = warp::path!("coords" / String)
+        .then(|coords| async {
+            println!("[warp filter] [POST /coords] Rendezvousing...");
+            UP_TX.send(coords).unwrap();
+            "ok"
+        });
+    let routes = warp::get().and(html)
+        .or(warp::post().and(data));
+    println!("[main] Serving via warp...");
+    let socket_addr: SocketAddr = SERVER_ADDR.parse()?;
+    warp::serve(routes).run(socket_addr).await;
+    unreachable!()
 }
 
 fn load_map(coords: impl AsRef<OsStr>) -> Result<()> {
@@ -61,6 +128,9 @@ impl HelmetMcu<Box<dyn SerialPort>, dyn SerialPort> {
     }
 }
 
+const ROWS_BETWEEN_SLEEPS: u8 = 2;
+const SLEEP_TIME_MILLIS: u64 = 17;
+
 impl<S: DerefMut<Target = T>, T: Write + ?Sized> HelmetMcu<S, T> {
     fn send_map(&mut self) -> Result<()> {
         self.send_png(MAP_IMAGE_FILENAME)
@@ -70,6 +140,25 @@ impl<S: DerefMut<Target = T>, T: Write + ?Sized> HelmetMcu<S, T> {
         let file = File::open(filename)?;
         let data = read_png(file)?;
         self.send_rotated(data)?;
+        Ok(())
+    }
+
+    fn send_png_1bit(&mut self, filename: impl AsRef<Path>) -> Result<()> {
+        let file = File::open(filename)?;
+        let data = read_png_1bit(file)?;
+        self.send_rotated(data)?;
+        Ok(())
+    }
+
+    fn send_png_g(&mut self, filename: impl AsRef<Path> + Clone) -> Result<()> {
+        let file = File::open(filename.clone())?;
+        let mut data = read_png(file)?;
+        if data.len() != (64 * 64) {
+            assert!(data.len() == (64 * 64 / 8));
+            self.send_png_1bit(filename.clone())?;
+        } else {
+            self.send_rotated(data)?;
+        }
         Ok(())
     }
 
@@ -84,6 +173,7 @@ impl<S: DerefMut<Target = T>, T: Write + ?Sized> HelmetMcu<S, T> {
         println!("[send_raw] Sending reset sequence...");
         self.serial.write_all(&RESET_SEQ)?;
         self.serial.flush()?;
+        let mut rows_since_sleep = ROWS_BETWEEN_SLEEPS;
         let mut index_within_row = -1;
         let mut byte = 0x0_u8;
         let mut index_within_byte = 0;
@@ -103,7 +193,14 @@ impl<S: DerefMut<Target = T>, T: Write + ?Sized> HelmetMcu<S, T> {
                 if index_within_row >= 8 {
                     index_within_row = -1;
                     self.serial.flush()?;
-                    std::thread::sleep(std::time::Duration::from_millis(10));
+                    if rows_since_sleep >= ROWS_BETWEEN_SLEEPS {
+                        sleep(std::time::Duration::from_millis(
+                            SLEEP_TIME_MILLIS
+                        ));
+                        rows_since_sleep = 0;
+                    } else {
+                        rows_since_sleep += 1;
+                    }
                 }
             }
             if index_within_row == -1 {
@@ -120,8 +217,24 @@ impl<S: DerefMut<Target = T>, T: Write + ?Sized> HelmetMcu<S, T> {
     }
 }
 
+fn read_png_1bit(file: File) -> Result<Vec<u8>> {
+    let mut reader = PngDec::new(file).read_info()?;
+    let mut raw_buf = vec![0; reader.output_buffer_size()];
+    let mut buf = vec![0u8; raw_buf.len() * 8];
+    reader.next_frame(&mut raw_buf)?;
+    let mut index = 0;
+    for i in 0..(raw_buf.len()) {
+        for j in 0..8 {
+            if (raw_buf[i] & (1 << j)) > 0 {
+                buf[(i * 8) + j] = 0xFF;
+            }
+        }
+    }
+    Ok(buf)
+}
+
 fn read_png(file: File) -> Result<Vec<u8>> {
-    let mut reader = png::Decoder::new(file).read_info()?;
+    let mut reader = PngDec::new(file).read_info()?;
     let mut buf = vec![0; reader.output_buffer_size()];
     reader.next_frame(&mut buf)?;
     Ok(buf)
